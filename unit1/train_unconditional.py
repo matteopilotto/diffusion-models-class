@@ -25,6 +25,7 @@ from torchvision.transforms import (
     Resize,
     ToTensor,
 )
+
 from tqdm.auto import tqdm
 import wandb
 import PIL
@@ -180,6 +181,11 @@ def parse_args():
             "[TensorBoard](https://www.tensorflow.org/tensorboard) log directory. Will default to"
             " *output_dir/runs/**CURRENT_DATETIME_HOSTNAME***."
         ),
+    )
+    parser.add_argument(
+        "--project_name",
+        type=str,
+        default=os.path.split(__file__)[-1].split(".")[0]
     )
     parser.add_argument("--local_rank", type=int, default=-1, help="For distributed training: local_rank")
     parser.add_argument(
@@ -346,7 +352,8 @@ def main(args):
             os.makedirs(args.output_dir, exist_ok=True)
 
     if accelerator.is_main_process:
-        run = os.path.split(__file__)[-1].split(".")[0]
+        # run = os.path.split(__file__)[-1].split(".")[0]
+        run = args.project_name
         accelerator.init_trackers(run)
 
     global_step = 0
@@ -428,10 +435,9 @@ def main(args):
 
                 # denormalize the images and save to tensorboard
                 images_processed = (images * 255).round().astype("uint8")
-                # print("##################################", images_processed.shape)
                 images = [PIL.Image.fromarray(image) for image in images_processed]
-                # images = wandb.Image(images_processed.transpose(0, 3, 1, 2))
                 accelerator.trackers[0].log({"examples": [wandb.Image(image) for image in images]})
+                # images = wandb.Image(images_processed.transpose(0, 3, 1, 2))
                 # accelerator.trackers[0].writer.add_images(
                 #     "test_samples", images_processed.transpose(0, 3, 1, 2), epoch
                 # )
