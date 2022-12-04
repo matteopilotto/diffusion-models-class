@@ -191,7 +191,7 @@ def parse_args():
     parser.add_argument(
         "--mixed_precision",
         type=str,
-        default="bf16",
+        default="no",
         choices=["no", "fp16", "bf16"],
         help=(
             "Whether to use mixed precision. Choose"
@@ -253,10 +253,10 @@ def main(args):
             "DownBlock2D",
             "DownBlock2D",
             "AttnDownBlock2D",
-            "DownBlock2D",
+            "AttnDownBlock2D",
         ),
         up_block_types=(
-            "UpBlock2D",
+            "AttnUpBlock2D",
             "AttnUpBlock2D",
             "UpBlock2D",
             "UpBlock2D",
@@ -353,8 +353,9 @@ def main(args):
 
     if accelerator.is_main_process:
         # run = os.path.split(__file__)[-1].split(".")[0]
-        run = args.project_name
-        accelerator.init_trackers(run)
+        # run = args.project_name
+        accelerator.init_trackers(project_name=args.project_name,
+                                  config=args)
 
     global_step = 0
     for epoch in range(args.num_epochs):
