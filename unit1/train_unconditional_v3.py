@@ -257,7 +257,7 @@ def main(args):
         sample_size=args.resolution,
         in_channels=3,
         out_channels=3,
-        layers_per_block=3,
+        layers_per_block=2,
         act_fn="silu",
         attention_head_dim=8,
         block_out_channels=(128, 128, 256, 256, 512, 512),
@@ -455,7 +455,6 @@ def main(args):
                 images_processed = (images * 255).round().astype("uint8")
                 images = [PIL.Image.fromarray(image) for image in images_processed]
                 accelerator.trackers[0].log({"examples": [wandb.Image(image) for image in images]})
-                # images = wandb.Image(images_processed.transpose(0, 3, 1, 2))
                 # accelerator.trackers[0].writer.add_images(
                 #     "test_samples", images_processed.transpose(0, 3, 1, 2), epoch
                 # )
@@ -463,6 +462,9 @@ def main(args):
             if epoch % args.save_model_epochs == 0 or epoch == args.num_epochs - 1:
                 # save the model
                 pipeline.save_pretrained(args.output_dir)
+                # artifact = wandb.Artifact(args.output_dir, type='model')
+                # artifact.add_dir(args.output_dir)
+                # wandb.log_artifact(artifact)
                 if args.push_to_hub:
                     repo.push_to_hub(commit_message=f"Epoch {epoch}", blocking=False)
         accelerator.wait_for_everyone()
