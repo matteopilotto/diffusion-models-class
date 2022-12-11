@@ -437,7 +437,7 @@ def main(args):
 
         # Generate sample images for visual inspection
         if accelerator.is_main_process:
-            if epoch % args.save_images_epochs == 0 or epoch == args.num_epochs - 1:
+            if (epoch+1) % args.save_images_epochs == 0 or epoch+1 == args.num_epochs:
                 pipeline = DDPMPipeline(
                     unet=accelerator.unwrap_model(ema_model.averaged_model if args.use_ema else model),
                     scheduler=noise_scheduler,
@@ -459,14 +459,18 @@ def main(args):
                 #     "test_samples", images_processed.transpose(0, 3, 1, 2), epoch
                 # )
 
-            if epoch % args.save_model_epochs == 0 or epoch == args.num_epochs - 1:
+            if (epoch+1) % args.save_images_epochs == 0 or epoch+1 == args.num_epochs:
                 # save the model
                 pipeline.save_pretrained(args.output_dir)
-                # artifact = wandb.Artifact(args.output_dir, type='model')
-                # artifact.add_dir(args.output_dir)
+                artifact = wandb.Artifact(name=accelerator.trackers[0].run.id, type='model')
+                artifact.add_dir(local_path=args.output_dir)
+                accelerator.trackers[0].run.log_artifact(artifact)
                 # wandb.log_artifact(artifact)
                 if args.push_to_hub:
                     repo.push_to_hub(commit_message=f"Epoch {epoch}", blocking=False)
+                
+                # if args.push_to_wandb:
+                    
         accelerator.wait_for_everyone()
 
     accelerator.end_training()
