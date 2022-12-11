@@ -175,6 +175,7 @@ def parse_args():
     parser.add_argument("--ema_power", type=float, default=3 / 4, help="The power value for the EMA decay.")
     parser.add_argument("--ema_max_decay", type=float, default=0.9999, help="The maximum decay magnitude for EMA.")
     parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
+    parser.add_argument("--push_to_wandb", action="store_true", help="Whether or not to push the model to WANDB.")
     parser.add_argument("--hub_token", type=str, default=None, help="The token to use to push to the Model Hub.")
     parser.add_argument(
         "--hub_model_id",
@@ -459,13 +460,15 @@ def main(args):
                 #     "test_samples", images_processed.transpose(0, 3, 1, 2), epoch
                 # )
 
-            if (epoch+1) % args.save_images_epochs == 0 or epoch+1 == args.num_epochs:
-                # save the model
+            if (epoch+1) % args.save_model_epochs == 0 or epoch+1 == args.num_epochs:
+                # save the model locally
                 pipeline.save_pretrained(args.output_dir)
-                artifact = wandb.Artifact(name=accelerator.trackers[0].run.id, type='model')
-                artifact.add_dir(local_path=args.output_dir)
-                accelerator.trackers[0].run.log_artifact(artifact)
-                # wandb.log_artifact(artifact)
+                
+                # save the model on WANDB
+                if args.push_to_wandb:
+                    artifact = wandb.Artifact(name=accelerator.trackers[0].run.id, type='model')
+                    artifact.add_dir(local_path=args.output_dir)
+                    accelerator.trackers[0].run.log_artifact(artifact)
                 if args.push_to_hub:
                     repo.push_to_hub(commit_message=f"Epoch {epoch}", blocking=False)
                 
