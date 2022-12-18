@@ -94,7 +94,7 @@ def train(
                 optimizer.zero_grad()
                 
             # Occasionally log samples
-            if (step+1)%log_samples_every == 0:
+            if (step+1) % log_samples_every == 0:
                 x = torch.randn(8, 3, 256, 256).to(device) # Batch of 8
                 for i, t in tqdm(enumerate(sampling_scheduler.timesteps)):
                     model_input = sampling_scheduler.scale_model_input(x, t)
@@ -107,7 +107,7 @@ def train(
                 wandb.log({'Sample generations': wandb.Image(im)})
                 
             # Occasionally save model
-            if (step+1)%save_model_every == 0:
+            if (step+1) % save_model_every == 0:
                 image_pipe.save_pretrained(model_save_name+f'step_{step+1}')
 
         # Update the learning rate for the next epoch
