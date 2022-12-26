@@ -10,12 +10,13 @@ import torch.nn.functional as F
 
 from accelerate import Accelerator
 from accelerate.logging import get_logger
-from datasets import load_dataset
+# from datasets import load_dataset
 from diffusers import DDPMPipeline, DDPMScheduler, UNet2DModel, __version__
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
 from huggingface_hub import HfFolder, Repository, whoami
 from packaging import version
+import torchvision
 from torchvision.transforms import (
     CenterCrop,
     Compose,
@@ -29,7 +30,12 @@ from torchvision.transforms import (
 from tqdm.auto import tqdm
 import wandb
 import PIL
+from class_cond_unet import ClassConditionedUNet
+import random
 
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+tensor2pil = torchvision.transforms.ToPILImage()
 
 logger = get_logger(__name__)
 diffusers_version = version.parse(version.parse(__version__).base_version)
@@ -229,8 +235,8 @@ def parse_args():
     if env_local_rank != -1 and env_local_rank != args.local_rank:
         args.local_rank = env_local_rank
 
-    if args.dataset_name is None and args.train_data_dir is None:
-        raise ValueError("You must specify either a dataset name from the hub or a train data directory.")
+    # if args.dataset_name is None and args.train_data_dir is None:
+    #     raise ValueError("You must specify either a dataset name from the hub or a train data directory.")
 
     return args
 
@@ -254,31 +260,8 @@ def main(args):
         logging_dir=logging_dir,
     )
 
-    model = UNet2DModel(
-        sample_size=args.resolution,
-        in_channels=3,
-        out_channels=3,
-        layers_per_block=2,
-        act_fn="silu",
-        attention_head_dim=8,
-        block_out_channels=(128, 128, 256, 256, 512, 512),
-        down_block_types=(
-            "DownBlock2D",
-            "DownBlock2D",
-            "DownBlock2D",
-            "DownBlock2D",
-            "AttnDownBlock2D",
-            "AttnDownBlock2D"
-        ),
-        up_block_types=(
-            "AttnUpBlock2D",
-            "AttnUpBlock2D",
-            "UpBlock2D",
-            "UpBlock2D",
-            "UpBlock2D",
-            "UpBlock2D"
-        ),
-    )
+    model = ClassConditionedUNet()
+    
     accepts_prediction_type = "prediction_type" in set(inspect.signature(DDPMScheduler.__init__).parameters.keys())
 
     if accepts_prediction_type:
@@ -298,40 +281,20 @@ def main(args):
         eps=args.adam_epsilon,
     )
 
-    augmentations = Compose(
-        [
-            Resize(args.resolution, interpolation=InterpolationMode.BILINEAR),
-            CenterCrop(args.resolution),
-            RandomHorizontalFlip(),
-            ToTensor(),
-            Normalize([0.5], [0.5]),
-        ]
-    )
-
-    if args.dataset_name is not None:
-        dataset = load_dataset(
-            args.dataset_name,
-            args.dataset_config_name,
-            cache_dir=args.cache_dir,
-            split="train",
-        )
-    else:
-        dataset = load_dataset("imagefolder", data_dir=args.train_data_dir, cache_dir=args.cache_dir, split="train")
+    dataset = torchvision.datasets.FashionMNIST(root='./fashion_mnist',
+                                                train=True,
+                                                download=True,
+                                                transform=torchvision.transforms.ToTensor())
     
-    if args.dataset_sample_size is not None:
-        dataset = dataset.shuffle(seed=args.seed).select(range(args.dataset_sample_size))
+    # if args.dataset_sample_size is not None:
+    #     dataset = dataset.shuffle(seed=args.seed).select(range(args.dataset_sample_size))
     
-    def transforms(examples):
-        images = [augmentations(image.convert("RGB")) for image in examples["image"]]
-        return {"input": images}
-
-    logger.info(f"Dataset size: {len(dataset)}")
-
-    dataset.set_transform(transforms)
     train_dataloader = torch.utils.data.DataLoader(dataset,
                                                    batch_size=args.train_batch_size,
                                                    shuffle=True,
                                                    num_workers=args.dataloader_num_workers)
+
+    logger.info(f"Dataset size: {len(dataset)}")
 
     lr_scheduler = get_scheduler(
         args.lr_scheduler,
@@ -340,9 +303,10 @@ def main(args):
         num_training_steps=(len(train_dataloader) * args.num_epochs) // args.gradient_accumulation_steps,
     )
 
-    model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        model, optimizer, train_dataloader, lr_scheduler
-    )
+    model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(model,
+                                                                           optimizer,
+                                                                           train_dataloader,
+                                                                           lr_scheduler)
 
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
 
@@ -382,14 +346,15 @@ def main(args):
         progress_bar = tqdm(total=num_update_steps_per_epoch, disable=not accelerator.is_local_main_process)
         progress_bar.set_description(f"Epoch {epoch}")
         for step, batch in enumerate(train_dataloader):
-            clean_images = batch["input"]
-            # Sample noise that we'll add to the images
-            noise = torch.randn(clean_images.shape).to(clean_images.device)
-            bsz = clean_images.shape[0]
-            # Sample a random timestep for each image
-            timesteps = torch.randint(
-                0, noise_scheduler.config.num_train_timesteps, (bsz,), device=clean_images.device
-            ).long()
+            clean_images = (batch[0] * 2 - 1).to(device)
+            labels = batch[1].to(device)
+            noise = torch.randn_like(clean_images).to(device)
+            
+            
+            # create random timesteps
+            batch_size = clean_images.shape[0]
+            num_timesteps = noise_scheduler.config.num_train_timesteps
+            timesteps = torch.tensor([random.randint(0, num_timesteps-1) for _ in range(batch_size)]).to(device)
 
             # Add noise to the clean images according to the noise magnitude at each timestep
             # (this is the forward diffusion process)
@@ -397,7 +362,7 @@ def main(args):
 
             with accelerator.accumulate(model):
                 # Predict the noise residual
-                model_output = model(noisy_images, timesteps).sample
+                model_output = model(noisy_images, timesteps, labels).sample
 
                 if args.prediction_type == "epsilon":
                     loss = F.mse_loss(model_output, noise)  # this could have different weights!
@@ -440,38 +405,56 @@ def main(args):
         # Generate sample images for visual inspection
         if accelerator.is_main_process:
             if (epoch+1) % args.save_images_epochs == 0 or epoch+1 == args.num_epochs:
-                pipeline = DDPMPipeline(
-                    unet=accelerator.unwrap_model(ema_model.averaged_model if args.use_ema else model),
-                    scheduler=noise_scheduler,
-                )
+#                 pipeline = DDPMPipeline(unet=accelerator.unwrap_model(ema_model.averaged_model if args.use_ema else model),
+#                                         scheduler=noise_scheduler)
 
-                generator = torch.Generator(device=pipeline.device).manual_seed(0)
-                # run pipeline in inference (sample random noise and denoise)
-                images = pipeline(
-                    generator=generator,
-                    batch_size=args.eval_batch_size,
-                    output_type="numpy",
-                ).images
+#                 generator = torch.Generator(device=pipeline.device).manual_seed(args.seed)
+#                 # run pipeline in inference (sample random noise and denoise)
+#                 images = pipeline(
+#                     generator=generator,
+#                     batch_size=args.eval_batch_size,
+#                     output_type="numpy",
+#                 ).images
 
-                # denormalize the images and save to tensorboard
-                images_processed = (images * 255).round().astype("uint8")
-                images = [PIL.Image.fromarray(image) for image in images_processed]
+                
+                generator = torch.Generator(device=device).manual_seed(args.seed)
+                x = torch.randn((10, 1, 28, 28), device=device, generator=generator)
+                labels = torch.tensor([[i] * 1 for i in range(10)]).flatten().to(device)
+
+                for i, timestep in enumerate(tqdm(noise_scheduler.timesteps)):
+                    with torch.inference_mode():
+                        noise_pred = model(x, timestep, labels).sample
+
+                    x = noise_scheduler.step(noise_pred, timestep, x, generator=generator).prev_sample
+                
+                
+                images_processed = torchvision.transforms.functional.invert(((x.cpu().clip(-1, 1) + 1) / 2))
+                images = [tensor2pil(image) for image in images_processed]
                 accelerator.trackers[0].log({"examples": [wandb.Image(image) for image in images]})
+                
+                
+                # denormalize the images and save to tensorboard
+                # images_processed = (images * 255).round().astype("uint8")
+                # images = [PIL.Image.fromarray(image) for image in images_processed]
+                # accelerator.trackers[0].log({"examples": [wandb.Image(image) for image in images]})
                 # accelerator.trackers[0].writer.add_images(
                 #     "test_samples", images_processed.transpose(0, 3, 1, 2), epoch
                 # )
 
-            if (epoch+1) % args.save_model_epochs == 0 or epoch+1 == args.num_epochs:
-                # save the model locally
-                pipeline.save_pretrained(args.output_dir)
+#             if (epoch+1) % args.save_model_epochs == 0 or epoch+1 == args.num_epochs:
+#                 # save the model locally
+#                 pipeline = DDPMPipeline(
+#                     unet=accelerator.unwrap_model(ema_model.averaged_model if args.use_ema else model),
+#                     scheduler=noise_scheduler)
+#                 pipeline.save_pretrained(args.output_dir)
                 
-                # save the model on WANDB
-                if args.push_to_wandb:
-                    artifact = wandb.Artifact(name=accelerator.trackers[0].run.id, type='model')
-                    artifact.add_dir(local_path=args.output_dir)
-                    accelerator.trackers[0].run.log_artifact(artifact)
-                if args.push_to_hub:
-                    repo.push_to_hub(commit_message=f"Epoch {epoch}", blocking=False)
+#                 # save the model on WANDB
+#                 if args.push_to_wandb:
+#                     artifact = wandb.Artifact(name=accelerator.trackers[0].run.id, type='model')
+#                     artifact.add_dir(local_path=args.output_dir)
+#                     accelerator.trackers[0].run.log_artifact(artifact)
+#                 if args.push_to_hub:
+#                     repo.push_to_hub(commit_message=f"Epoch {epoch}", blocking=False)
                 
                 # if args.push_to_wandb:
                     
